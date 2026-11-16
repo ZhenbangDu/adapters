@@ -1,7 +1,7 @@
 [
   {
     "adapter_name": "threedcodebench",
-    "adapter_builders": ["Zhenbang Du"],
+    "adapter_builders": ["Zhenbang Du (zdu89@gatech.edu)"],
     "original_benchmark": [
       {
         "split": "text_to_3d",

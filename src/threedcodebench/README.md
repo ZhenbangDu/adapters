@@ -191,7 +191,7 @@ Reproduction (to be finalised with the parity fork):
 
 ## Authors & Contributions
 
-This adapter is developed and maintained by Zhenbang Du ([@ZhenbangDu](https://github.com/ZhenbangDu)).
+This adapter is developed and maintained by [Zhenbang Du](mailto:zdu89@gatech.edu) ([@ZhenbangDu](https://github.com/ZhenbangDu)).
 
 **Issues and Contributions:**
 - Submit issues and pull requests to [harbor-framework/adapters](https://github.com/harbor-framework/adapters).
