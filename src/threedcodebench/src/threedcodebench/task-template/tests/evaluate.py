@@ -195,14 +195,17 @@ def main() -> int:
     t0 = time.time()
     try:
         metrics = evaluate(args.instance)
-        rc = 0
-    except Exception as e:  # verifier bug, not an agent failure: surface it
+    except Exception as e:
+        # Verifier bug or infrastructure problem, not an agent outcome: record
+        # it and write no reward so Harbor reports a failed trial, not a 0.
         metrics = {
             "instance": args.instance,
-            "executability": 0,
             "verifier_error": f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
+            "verifier_latency_s": round(time.time() - t0, 2),
         }
-        rc = 1
+        (VERIFIER_DIR / "metrics.json").write_text(json.dumps(metrics, indent=2))
+        print(metrics["verifier_error"], file=sys.stderr)
+        return 1
     metrics["verifier_latency_s"] = round(time.time() - t0, 2)
 
     (VERIFIER_DIR / "metrics.json").write_text(json.dumps(metrics, indent=2))
@@ -210,7 +213,7 @@ def main() -> int:
     print(json.dumps({k: metrics.get(k) for k in (
         "instance", "executability", "render_status", "export_status",
         "chamfer_status", "cd", "cd_yawmin")}, indent=2))
-    return rc
+    return 0
 
 
 if __name__ == "__main__":
