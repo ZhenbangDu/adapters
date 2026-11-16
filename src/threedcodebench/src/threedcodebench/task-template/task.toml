@@ -28,8 +28,8 @@ upstream_category = "{{CATEGORY}}"
 timeout_sec = {{TIME_LIMIT}}.0
 
 [verifier]
-# render (240 s cap) + agent GLB export (180 s cap) + reference GLB export + Chamfer.
-timeout_sec = 1200.0
+# render + agent GLB export + reference GLB export (600 s cap each) + Chamfer.
+timeout_sec = 2400.0
 
 [environment]
 build_timeout_sec = 1800.0

@@ -5,11 +5,11 @@ Runs under Blender's bundled Python (`blender-python`) and reproduces the
 upstream scoring pipeline of gaoypeng/3dcodebench, using the upstream helper
 scripts verbatim from /tests/upstream/:
 
-  1. core/render.py (Blender side, CYCLES, 64 spp, 512 px, 240 s cap)
+  1. core/render.py (Blender side, CYCLES, 64 spp, 512 px, 600 s cap)
        status == "OK"  <=>  script ran without exception, >= 1 mesh object
        exists afterwards, and all 4 reference views rendered.
        This is the upstream `executability` metric (metrics/executability.py).
-  2. core/export_glb.py (Blender side, 180 s cap) for the agent's script and
+  2. core/export_glb.py (Blender side, 600 s cap) for the agent's script and
      for the hidden reference script.
   3. metrics/shape_chamfer.py functions: 8192 surface points per mesh,
      unit-sphere normalisation, symmetric squared Chamfer, min over 4 yaws.
@@ -41,11 +41,15 @@ VERIFIER_DIR = Path("/logs/verifier")
 EVAL_DIR = VERIFIER_DIR / "eval"
 BLENDER = shutil.which("blender") or "blender"
 
-# Upstream defaults (core/render.py, core/export_glb.py, metrics/shape_chamfer.py).
-RENDER_TIMEOUT_S = 240
+# Render settings are the upstream defaults (core/render.py). The upstream
+# per-call caps (render 240 s, export 180 s) were set for GPU rendering; on the
+# CPU-only Harbor image they time out on valid reference scripts (e.g.
+# BasketBase, PalmTree, Bed), so both caps are raised to 600 s. The dataset
+# card asks for scripts that finish in < 5 min on one CPU core.
+RENDER_TIMEOUT_S = 600
 RENDER_ARGS = ["--samples", "64", "--resolution", "512", "--engine", "CYCLES"]
-EXPORT_TIMEOUT_S = 180
-REFERENCE_EXPORT_TIMEOUT_S = 600  # reference factories are trusted; allow slack
+EXPORT_TIMEOUT_S = 600
+REFERENCE_EXPORT_TIMEOUT_S = 600
 CHAMFER_N_POINTS = 8192
 CHAMFER_SEED = 0
 
@@ -155,6 +159,10 @@ def evaluate(instance: str) -> dict:
     m["n_views_rendered"] = rec.get("n_views_rendered")
     m["render_latency_s"] = rec.get("latency_s")
     m["executability"] = int(rec.get("status") == "OK")
+    if rec.get("status") == "ERR_TIMEOUT":
+        # Export re-runs the same script under the same cap; skip it.
+        m["export_status"] = "SKIPPED_RENDER_TIMEOUT"
+        return m
 
     # 2. GLB of the agent's object
     erec, gen_glb = export_glb(gen_script, gen_dir / "glb", instance, EXPORT_TIMEOUT_S)
