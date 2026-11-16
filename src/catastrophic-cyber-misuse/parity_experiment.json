@@ -4,12 +4,14 @@
     "agent": "<agent>@<version>",
     "model": "<model>",
     "date": "YYYY-MM-DD",
-    "adapted_benchmark_size": null,
-    "parity_benchmark_size": null,
+    "adapted_benchmark_size": 9,
+    "parity_benchmark_size": 9,
     "number_of_runs": null,
     "notes": null,
-    "original_parity_repo": null,
-    "adapter_pr": [],
+    "original_parity_repo": "https://github.com/apartresearch/3cb",
+    "adapter_pr": [
+      "https://github.com/harbor-framework/adapters/pull/102"
+    ],
     "dataset_pr": [],
     "parity_pr": [],
     "metrics": [
