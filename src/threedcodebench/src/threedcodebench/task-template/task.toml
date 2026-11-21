@@ -29,12 +29,24 @@ upstream_category = "{{CATEGORY}}"
 timeout_sec = {{TIME_LIMIT}}.0
 
 [verifier]
-# Score in a fresh container built from the same image, so nothing the agent
-# changed in its sandbox (Blender binary, Python packages, /tests) can affect
-# grading. Only the artifacts above are carried over.
+# Score in a separate container built from tests/Dockerfile (the same Blender
+# stack plus the CPU SigLIP-2 / Uni3D models), so nothing the agent changed in
+# its sandbox can affect grading. Only the artifacts above are carried over.
 environment_mode = "separate"
-# render + agent GLB export + reference GLB export (600 s cap each) + Chamfer.
-timeout_sec = 2400.0
+# render + agent GLB export + reference GLB export (600 s cap each) + Chamfer
+# + SigLIP-2 / Uni3D (1200 s cap).
+timeout_sec = 3600.0
+# THREEDCODEBENCH_INSTANCE: the instance tests/test.sh scores (kept out of
+# tests/, see tests/Dockerfile). NEURAL_THREADS: torch thread count for
+# SigLIP-2 / Uni3D; matches [verifier.environment].cpus.
+env = { THREEDCODEBENCH_INSTANCE = "{{INSTANCE}}", NEURAL_THREADS = "4" }
+
+[verifier.environment]
+# The grading image also holds ~6.6 GB of model weights.
+build_timeout_sec = 3600.0
+cpus = 4
+memory_mb = 16384
+storage_mb = 10240
 
 [environment]
 build_timeout_sec = 1800.0

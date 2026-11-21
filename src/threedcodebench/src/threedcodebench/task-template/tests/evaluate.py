@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Harbor verifier for one 3DCodeBench text-to-3D instance.
+"""Verifier for one 3DCodeBench text-to-3D instance.
 
 Runs under Blender's bundled Python (`blender-python`) and reproduces the
 upstream scoring pipeline of gaoypeng/3dcodebench, using the upstream helper
@@ -13,14 +13,17 @@ scripts verbatim from /tests/upstream/:
      for the hidden reference script.
   3. metrics/shape_chamfer.py functions: 8192 surface points per mesh,
      unit-sphere normalisation, symmetric squared Chamfer, min over 4 yaws.
+  4. neural_metrics.py (CPU): SigLIP-2 text-image similarity of the four
+     renders (metrics/text_image_similarity.py) and Uni3D 3D-3D similarity of
+     the two GLBs (metrics/shape_uni3d.py).
 
 The agent's script is re-executed from a copy, so a GLB or render the agent
 produced itself never counts (same as upstream "bake the .py independently").
 
 Outputs:
-  /logs/verifier/reward.txt     executability, 0 or 1 (Harbor reward)
-  /logs/verifier/metrics.json   statuses, errors, Chamfer distances, timings
-  /logs/verifier/eval/          renders, GLB and Blender logs for inspection
+  /logs/verifier/reward.txt     executability, 0 or 1
+  /logs/verifier/metrics.json   statuses, errors, all metric values, timings
+  /logs/verifier/eval/          renders, GLB and logs for inspection
 """
 
 from __future__ import annotations
@@ -34,24 +37,26 @@ import time
 import traceback
 from pathlib import Path
 
-UPSTREAM = Path("/tests/upstream")
-REFERENCE_DIR = Path("/tests/reference")
+TESTS = Path("/tests")
+UPSTREAM = TESTS / "upstream"
+REFERENCE_DIR = TESTS / "reference"  # <Instance>.py (reference script), <Instance>.txt (prompt)
 WORKSPACE = Path("/workspace")
 VERIFIER_DIR = Path("/logs/verifier")
 EVAL_DIR = VERIFIER_DIR / "eval"
 BLENDER = shutil.which("blender") or "blender"
 
 # Render settings are the upstream defaults (core/render.py). The upstream
-# per-call caps (render 240 s, export 180 s) were set for GPU rendering; on the
-# CPU-only Harbor image they time out on valid reference scripts (e.g.
-# BasketBase, PalmTree, Bed), so both caps are raised to 600 s. The dataset
-# card asks for scripts that finish in < 5 min on one CPU core.
+# per-call caps (render 240 s, export 180 s) were set for GPU rendering; on this
+# CPU-only image they time out on valid reference scripts (e.g. BasketBase,
+# PalmTree, Bed), so both caps are raised to 600 s. The dataset card asks for
+# scripts that finish in < 5 min on one CPU core.
 RENDER_TIMEOUT_S = 600
 RENDER_ARGS = ["--samples", "64", "--resolution", "512", "--engine", "CYCLES"]
 EXPORT_TIMEOUT_S = 600
 REFERENCE_EXPORT_TIMEOUT_S = 600
 CHAMFER_N_POINTS = 8192
 CHAMFER_SEED = 0
+NEURAL_TIMEOUT_S = 1200
 
 
 def run_blender(helper: str, args: list[str], timeout: int, log_path: Path) -> dict:
@@ -122,28 +127,25 @@ def chamfer(ref_glb: Path, gen_glb: Path) -> dict:
     }
 
 
-def evaluate(instance: str) -> dict:
-    m: dict = {
-        "instance": instance,
-        "executability": 0,
-        "render_status": None,
-        "export_status": None,
-        "chamfer_status": None,
-        "cd": None,
-        "cd_yawmin": None,
-        "agent_done_sentinel": (WORKSPACE / ".agent_done").is_file(),
-    }
-    agent_script = WORKSPACE / f"{instance}.py"
-    if not agent_script.is_file():
-        m["render_status"] = "MISSING"
-        m["error"] = f"{agent_script} not found"
-        return m
+def neural_metrics(prompt_file: Path, renders: Path, gen_glb: Path | None, ref_glb: Path | None) -> dict:
+    """SigLIP-2 and Uni3D in a subprocess, so the models' memory is released
+    afterwards. A crash or timeout raises and becomes a verifier error."""
+    out = EVAL_DIR / "neural_metrics.json"
+    cmd = [sys.executable, str(TESTS / "neural_metrics.py"),
+           "--prompt-file", str(prompt_file), "--renders-dir", str(renders), "--out", str(out)]
+    if gen_glb is not None:
+        cmd += ["--gen-glb", str(gen_glb)]
+    if ref_glb is not None:
+        cmd += ["--ref-glb", str(ref_glb)]
+    with open(EVAL_DIR / "neural_metrics.log", "w") as fh:
+        subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, timeout=NEURAL_TIMEOUT_S, check=True)
+    return json.loads(out.read_text())
 
-    gen_dir = EVAL_DIR / "generated"
-    gen_dir.mkdir(parents=True, exist_ok=True)
-    gen_script = gen_dir / f"{instance}.py"
-    shutil.copy2(agent_script, gen_script)
-    m["code_chars"] = gen_script.stat().st_size
+
+def score_geometry(instance: str, gen_script: Path, m: dict) -> tuple[Path, Path | None, Path | None]:
+    """Executability, GLB export and Chamfer. Returns the renders directory and
+    the generated / reference GLBs that exist (None otherwise)."""
+    gen_dir = gen_script.parent
 
     # 1. executability (upstream render_log.json status)
     renders = gen_dir / "renders"
@@ -162,14 +164,14 @@ def evaluate(instance: str) -> dict:
     if rec.get("status") == "ERR_TIMEOUT":
         # Export re-runs the same script under the same cap; skip it.
         m["export_status"] = "SKIPPED_RENDER_TIMEOUT"
-        return m
+        return renders, None, None
 
     # 2. GLB of the agent's object
     erec, gen_glb = export_glb(gen_script, gen_dir / "glb", instance, EXPORT_TIMEOUT_S)
     m["export_status"] = erec.get("status")
     m["export_error"] = erec.get("error")
     if erec.get("status") != "OK":
-        return m
+        return renders, None, None
 
     # 3. GLB of the hidden reference, then Chamfer distance
     ref_dir = EVAL_DIR / "reference"
@@ -180,9 +182,48 @@ def evaluate(instance: str) -> dict:
     if rrec.get("status") != "OK":
         m["chamfer_status"] = "NO_REF_GLB"
         m["reference_export_error"] = rrec.get("error")
-        return m
+        return renders, gen_glb, None
     m.update(chamfer(ref_glb, gen_glb))
-    ref_glb.unlink(missing_ok=True)  # reproducible from tests/; keep logs small
+    return renders, gen_glb, ref_glb
+
+
+def evaluate(instance: str) -> dict:
+    reference_script = REFERENCE_DIR / f"{instance}.py"
+    prompt_file = REFERENCE_DIR / f"{instance}.txt"
+    if not (reference_script.is_file() and prompt_file.is_file()):
+        # The task's tests/ does not belong to this instance: a grader error.
+        raise RuntimeError(f"no reference files for instance {instance!r} in {REFERENCE_DIR}")
+
+    m: dict = {
+        "instance": instance,
+        "executability": 0,
+        "render_status": None,
+        "export_status": None,
+        "chamfer_status": None,
+        "cd": None,
+        "cd_yawmin": None,
+        "siglip2_status": None,
+        "siglip2_text_image": None,
+        "uni3d_status": None,
+        "uni3d_3d_3d": None,
+        "agent_done_sentinel": (WORKSPACE / ".agent_done").is_file(),
+    }
+    agent_script = WORKSPACE / f"{instance}.py"
+    if not agent_script.is_file():
+        m["render_status"] = "MISSING"
+        m["error"] = f"{agent_script} not found"
+        return m
+
+    gen_dir = EVAL_DIR / "generated"
+    gen_dir.mkdir(parents=True, exist_ok=True)
+    gen_script = gen_dir / f"{instance}.py"
+    shutil.copy2(agent_script, gen_script)
+    m["code_chars"] = gen_script.stat().st_size
+
+    renders, gen_glb, ref_glb = score_geometry(instance, gen_script, m)
+    m.update(neural_metrics(prompt_file, renders, gen_glb, ref_glb))
+    if ref_glb is not None:
+        ref_glb.unlink(missing_ok=True)  # reproducible from tests/; keep logs small
     return m
 
 
@@ -196,8 +237,8 @@ def main() -> int:
     try:
         metrics = evaluate(args.instance)
     except Exception as e:
-        # Verifier bug or infrastructure problem, not an agent outcome: record
-        # it and write no reward so Harbor reports a failed trial, not a 0.
+        # Grader bug or infrastructure problem, not an agent outcome: record it
+        # and write no reward, so the trial counts as failed rather than as 0.
         metrics = {
             "instance": args.instance,
             "verifier_error": f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
@@ -211,8 +252,8 @@ def main() -> int:
     (VERIFIER_DIR / "metrics.json").write_text(json.dumps(metrics, indent=2))
     (VERIFIER_DIR / "reward.txt").write_text(f"{metrics['executability']}\n")
     print(json.dumps({k: metrics.get(k) for k in (
-        "instance", "executability", "render_status", "export_status",
-        "chamfer_status", "cd", "cd_yawmin")}, indent=2))
+        "instance", "executability", "render_status", "export_status", "chamfer_status",
+        "cd", "cd_yawmin", "siglip2_text_image", "uni3d_3d_3d")}, indent=2))
     return 0
 
 

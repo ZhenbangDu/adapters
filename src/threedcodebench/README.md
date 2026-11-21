@@ -8,28 +8,30 @@ This adapter targets the benchmark's **coding-agent, text-to-3D setting** (`task
 
 - **Tasks:** 212 (all 3DCodeBench text-to-3D instances; 1 task per upstream instance, no exclusions).
 - **Provenance:** paper [arXiv:2606.01057](https://arxiv.org/abs/2606.01057); code [gaoypeng/3dcodebench](https://github.com/gaoypeng/3dcodebench) pinned at `42c7780`; data [YipengGao/3DCode](https://huggingface.co/datasets/YipengGao/3DCode) folder `3DCodeBench/` pinned at revision `b9ebb35`. License: MIT.
-- **Main adaptation choices:** the prompt is the upstream coding-agent prompt with only the working directory and Blender path substituted; scoring calls the upstream render / export / Chamfer helpers verbatim; one upstream reference script with a crash bug (`FanCoral_seed0`) is patched (see Notes & Caveats). The image-to-3D track and the single-shot / multi-turn LLM tracks are not part of this adapter.
+- **Main adaptation choices:** the prompt is the upstream coding-agent prompt with only the working directory and Blender path substituted. Scoring calls the upstream render, export, Chamfer, SigLIP-2 and Uni3D scorers verbatim, so every metric in the paper's coding-agent table (Table 2) is reported; SigLIP-2 and Uni3D run on CPU. One upstream reference script with a crash bug (`FanCoral_seed0`) is patched (see Notes & Caveats). The image-to-3D track and the single-shot / multi-turn LLM tracks are not part of this adapter.
 
 ## What is 3DCodeBench?
 
 3DCodeBench ([project page](https://3dcodebench.com), [paper](https://arxiv.org/abs/2606.01057)) benchmarks VLMs as procedural 3D modelers that translate text or image references into code for 3D modeling software. Procedural code yields deterministic, editable, engine-ready assets, but writing it requires fluency with Blender's Python API and code-level geometric reasoning. The paper evaluates 12 VLMs in single-shot, multi-turn (traceback feedback), and coding-agent settings (Claude Code, Codex CLI, Gemini CLI, Antigravity), and complements automatic metrics with a human-preference arena (3DCodeArena).
 
-Upstream metrics: **executability** (script runs in Blender 5.0 without an exception, leaves at least one mesh, and the 4 reference views render), image-grounded similarity (SigLIP-2 / DINOv3, GPU), 3D-shape metrics (**Chamfer distance** on exported GLBs; Uni3D, GPU), LLM-as-judge, and arena Elo.
+Upstream metrics: **executability** (script runs in Blender 5.0 without an exception, leaves at least one mesh, and the 4 reference views render), image-grounded similarity (**SigLIP-2**, DINOv3), 3D-shape metrics (**Chamfer distance** on exported GLBs, **Uni3D**), LLM-as-judge, and arena Elo. The coding-agent table (Table 2) reports the four in bold: executability, SigLIP-2 text-image similarity, Uni3D 3D-3D similarity, and Chamfer distance, the last three as conditional means over each run's successful tasks.
 
 ## Adapter Features
 
 - **Pinned, automatic data management:** `main.py` downloads the pinned HF revision of `3DCodeBench/` and shallow-fetches the pinned upstream commit (or uses local copies via `--benchmark-dir` / `--upstream-dir`).
 - **Stable task ids:** `ArmChair_seed0` → `armchair-seed0`; registry names `3dcodebench/<task-id>`.
-- **Docker environment:** Ubuntu 24.04 + official Blender 5.0.0 Linux build (`blender` on `PATH`, `blender-python` for its bundled Python), plus `scipy`, `shapely`, `trimesh`, `scikit-image` in Blender's Python (scipy is allowed by the prompt; the reference factories import the others). CPU only; no GPU needed.
+- **Agent environment (`environment/Dockerfile`):** Ubuntu 24.04 + official Blender 5.0.0 Linux build (`blender` on `PATH`, `blender-python` for its bundled Python), plus `scipy`, `shapely`, `trimesh`, `scikit-image` in Blender's Python (scipy is allowed by the prompt; the reference factories import the others). CPU only; no GPU needed.
 - **Upstream-faithful prompt:** `instruction.md` is the upstream `run_codex_agent.sh` prompt (agent-neutral wording) with `$WORK_DIR` → `/workspace`, `$BLENDER` → `blender`, and the 600 s time budget.
-- **Isolated grading:** `[verifier] environment_mode = "separate"`. The verifier runs in a fresh container built from the same image; only the agent's `/workspace/<Instance>.py` (and the optional `.agent_done` sentinel) are carried over as artifacts, so changes the agent made to its own sandbox (Blender, Python packages, files) cannot affect scoring. A verifier-internal error writes no reward, so it shows up as a failed trial rather than a score of 0.
-- **Upstream-faithful scoring:** `tests/evaluate.py` copies the agent's script and runs the upstream helpers from `tests/upstream/` unmodified:
-  1. `core/render.py` (CYCLES, 64 spp, 512 px, 600 s cap) → **executability** = `render_log.json` status `OK`; this is the Harbor reward (`reward.txt`, 0/1).
+- **Isolated grading (`tests/Dockerfile`):** `[verifier] environment_mode = "separate"` with its own grading image: the same Blender layers as the agent image plus CPU PyTorch, `transformers`, `timm`, `open_clip_torch`, the Uni3D point encoder (pinned commit) and the SigLIP-2 / Uni3D weights (pinned Hugging Face commits, loaded offline). The agent's sandbox never contains these models. Only the agent's `/workspace/<Instance>.py` (and the optional `.agent_done` sentinel) are carried over as artifacts, so changes the agent made to its own sandbox cannot affect scoring. The instance name reaches `test.sh` through `[verifier] env` in `task.toml`; under `tests/`, only `reference/<Instance>.py` and `reference/<Instance>.txt` differ between tasks (see Notes & Caveats). A grader-internal error (including a crash of the model step) writes no reward, so it shows up as a failed trial rather than a score of 0.
+- **Upstream-faithful scoring:** `tests/evaluate.py` copies the agent's script and runs the upstream code from `tests/upstream/` unmodified:
+  1. `core/render.py` (CYCLES, 64 spp, 512 px, 600 s cap) → **executability** = `render_log.json` status `OK`; this is the reward (`reward.txt`, 0/1).
   2. `core/export_glb.py` (600 s cap) for the agent's script and for the hidden reference script.
-  3. `metrics/shape_chamfer.py` functions (8192 points, unit-sphere normalisation, min over 4 yaws) → `cd`, `cd_yawmin` in `/logs/verifier/metrics.json`.
-  Agent-produced GLBs or renders are never used, matching upstream's "bake the produced `.py` independently".
+  3. `metrics/shape_chamfer.py` functions (8192 points, unit-sphere normalisation, min over 4 yaws) → `cd`, `cd_yawmin`.
+  4. `tests/neural_metrics.py`, which calls the functions of `metrics/text_image_similarity.py` (SigLIP-2 so400m-patch16-naflex; cosine between the caption and each of the 4 renders, averaged) → `siglip2_text_image`, and of `metrics/shape_uni3d.py` (Uni3D-Giant on 8192 points; cosine between generated and reference embeddings) → `uni3d_3d_3d`.
+
+  All values go to `/logs/verifier/metrics.json`. Agent-produced GLBs or renders are never used, matching upstream's "bake the produced `.py` independently".
 - **Oracle:** the ground-truth factory script for the instance.
-- **Aggregation:** `aggregate_metrics.py` computes executability plus conditional / penalized mean Chamfer distance for one or more Harbor job directories, and mean ± sample SEM across runs.
+- **Aggregation:** `aggregate_metrics.py` computes the Table 2 metrics for one or more job directories: executability, plus conditional and penalized means of Chamfer distance, SigLIP-2 and Uni3D, and mean ± sample SEM across runs.
 
 ## Generated Task Structure
 
@@ -44,10 +46,15 @@ datasets/threedcodebench/
 │   │   ├── solve.sh                    # copies the reference script into /workspace
 │   │   └── ArmChair_seed0.py           # ground-truth factory script
 │   └── tests/
+│       ├── Dockerfile                  # grading image: Blender + CPU SigLIP-2 / Uni3D
 │       ├── test.sh                     # runs evaluate.py with Blender's Python
-│       ├── evaluate.py                 # render → export → Chamfer; writes reward.txt + metrics.json
-│       ├── reference/ArmChair_seed0.py # hidden reference (for the Chamfer target)
-│       └── upstream/                   # render.py, export_glb.py, shape_chamfer.py (verbatim)
+│       ├── evaluate.py                 # render → export → Chamfer → neural metrics; writes reward.txt + metrics.json
+│       ├── neural_metrics.py           # SigLIP-2 text-image and Uni3D 3D-3D similarity
+│       ├── reference/
+│       │   ├── ArmChair_seed0.py       # hidden reference (Chamfer / Uni3D target)
+│       │   └── ArmChair_seed0.txt      # caption (text side of SigLIP-2)
+│       └── upstream/                   # render.py, export_glb.py, shape_chamfer.py,
+│                                       # text_image_similarity.py, shape_uni3d.py (verbatim)
 └── ...                                 # 212 task directories
 ```
 
@@ -70,7 +77,7 @@ src/threedcodebench/
         ├── instruction.md
         ├── environment/Dockerfile
         ├── solution/solve.sh
-        └── tests/{test.sh,evaluate.py}
+        └── tests/{Dockerfile,test.sh,evaluate.py,neural_metrics.py}
 ```
 
 ## Run Evaluation / Harness
@@ -100,7 +107,7 @@ harbor run -p datasets/threedcodebench -a <agent_name> -m "<model_name>"
 harbor job resume -p /path/to/jobs/<job_name>
 ```
 
-The YAML defaults to the oracle agent; commented blocks show `claude-code` and `codex`. Shape metrics for a finished job:
+The YAML defaults to the oracle agent; commented blocks show `claude-code` and `codex`. The job summary shows the mean reward (executability); all Table 2 metrics for a finished job:
 
 ```bash
 python src/threedcodebench/aggregate_metrics.py jobs/<job_name> --expected-tasks 212
@@ -131,21 +138,49 @@ Available flags:
 
 ## Comparison with Original Benchmark (Parity)
 
-**Status: oracle verified, parity pending.** The oracle passes 212/212 tasks (executability 1.000) with near-zero Chamfer distance to the reference (conditional mean 0.0009 over the 211 tasks with a valid reference mesh), using Harbor `0.26.0`, local Docker and the separate verifier container. Parity experiments have not been run yet; the plan (to be confirmed with the Harbor team) is a coding agent from the upstream harness (Claude Code or Codex CLI) with the same pinned agent version, model, prompt and 600 s budget on both sides, reporting executability and conditional Chamfer distance as mean ± sample SEM over at least 3 runs on all 212 tasks. Executability alone is close to saturated for coding agents in the paper (0.986–1.000), so Chamfer distance is reported alongside it.
+**Status: oracle verified, scorers checked against the paper, parity pending.**
+
+**Oracle.** Harbor `0.27.0`, local Docker, separate verifier container, 8 concurrent trials: 212/212 tasks pass (executability 1.000) with no trial errors. Against the reference, the oracle gets:
+
+- Chamfer distance (yaw-min, conditional) 0.0007 over the 211 tasks with a valid reference mesh.
+- Uni3D 3D–3D 0.987 over the same 211 tasks. It is not exactly 1 because the two GLBs are point-sampled independently.
+- SigLIP-2 0.153 over all 212 tasks.
+
+**Scorer check against Table 2.** Upstream publishes the scripts its coding agents wrote (HF `YipengGao/3DCode`, `3DCodeBench_ModelLogs/data/text_to_3D_agent.parquet`). The 212 GPT-5.4 mini + Codex CLI scripts were placed as the task solutions and run through the full Harbor pipeline: separate verifier, CPU models, `aggregate_metrics.py`. No model calls are involved, so this checks scoring only.
+
+| Metric | Paper, Table 2 (GPT-5.4 mini, Codex CLI) | Harbor re-score of the same scripts |
+|--------|------------------------------------------|-------------------------------------|
+| Executability | 1.000 | 1.000 (212/212) |
+| SigLIP-2 text-image (conditional) | 0.154 | 0.155 (n = 212) |
+| Uni3D 3D–3D (conditional) | 0.450 | 0.444 (n = 211) |
+| Chamfer distance (conditional) | 0.072 | 0.072 (`cd_yawmin`, n = 211) |
+
+The remaining differences come from CPU instead of GPU inference, per-task sampling seeds and re-baked reference GLBs (see Notes & Caveats).
+
+**Parity (pending).** The plan is still to be confirmed with the Harbor team. It uses the coding agent from the upstream harness (Codex CLI) with the same pinned agent version, model, prompt and 600 s budget on both sides. All four Table 2 metrics are reported as mean ± sample SEM over at least 3 runs. Executability alone is close to saturated for coding agents in the paper (0.986–1.000), so the three similarity metrics carry most of the signal.
 
 | Agent | Model | Metric | Number of Runs | Dataset Size | Original Benchmark Performance | Harbor Adapter Performance |
 |-------|-------|--------|------------------|--------------|------------------------------|----------------------------|
 | TBD | TBD | executability | TBD | 212 (100%) | TBD | TBD |
-| TBD | TBD | Chamfer distance (conditional) | TBD | 212 (100%) | TBD | TBD |
+| TBD | TBD | SigLIP-2 text-image (conditional) | TBD | 212 (100%) | TBD | TBD |
+| TBD | TBD | Uni3D 3D–3D (conditional) | TBD | 212 (100%) | TBD | TBD |
+| TBD | TBD | Chamfer distance, `cd_yawmin` (conditional) | TBD | 212 (100%) | TBD | TBD |
 
 Reproduction (to be finalised with the parity fork):
-- Original side: the upstream coding-agent scripts (`tasks/coding_agent/run_*_agent.sh`) at `42c7780`, scored with `core/render.py`, `core/export_glb.py` and `metrics/shape_chamfer.py`; the fork will fix the hardcoded Blender path and data directory.
-- Harbor side:
+- **Original side:** the upstream coding-agent scripts (`tasks/coding_agent/run_*_agent.sh`) at `42c7780`, scored with:
+  - `core/render.py` and `core/export_glb.py`;
+  - `metrics/shape_chamfer.py`, `metrics/text_image_similarity.py` and `metrics/shape_uni3d.py`.
+
+  The fork will fix the hardcoded Blender path and data directory and use the same 600 s scoring caps.
+- **Harbor side:**
   ```bash
   harbor run -c src/threedcodebench/run_threedcodebench.yaml -a <agent> -m "<model>"
   python src/threedcodebench/aggregate_metrics.py jobs/<job_name> --expected-tasks 212
   ```
-- Executability is a 0/1 per task averaged over the 212 tasks; `cd` is the symmetric squared Chamfer distance between unit-sphere-normalised point clouds (lower is better), averaged over tasks whose GLB was produced.
+- **Metric definitions:**
+  - **Executability:** 0/1 per task, averaged over the 212 tasks.
+  - **`cd_yawmin`:** the symmetric squared Chamfer distance between unit-sphere-normalised point clouds, minimised over 4 yaw rotations (lower is better). It is averaged over tasks whose GLB was produced.
+  - **SigLIP-2 and Uni3D:** cosine similarities (higher is better), averaged as described in Notes & Caveats.
 
 ## Notes & Caveats
 
@@ -157,10 +192,13 @@ Reproduction (to be finalised with the parity fork):
 - **Some reference scripts are not bit-for-bit deterministic.** A few coral/plant factories (`TableCoral`, `DiffGrowthBaseCoral`, `LeatherCoral`, `Seaweed`) produce slightly different meshes on repeated runs even with a fixed `PYTHONHASHSEED`. Upstream bakes the reference GLB once; the Harbor verifier re-bakes it in every trial (shipping baked GLBs would add ~2.7 GB to the dataset). Measured oracle self-distance over two full oracle runs: median ≈ 3e-4 per task; `TableCoral` reached 0.027 and 0.070 (comparable to the ≈ 0.07 agent average in the paper), while all other tasks stayed ≤ 0.014. The effect on the 211-task conditional mean is below 0.001, but per-task Chamfer for these instances is noisy.
 - **Chamfer sampling seed.** Upstream draws all per-instance sampling seeds from one RNG shared across a whole results directory; the Harbor verifier scores each task alone with a fresh RNG seeded 0. This only changes which surface points are sampled (oracle self-distance ≈ 1e-3 versus typical agent CD ≈ 0.07).
 - **Penalized Chamfer.** Upstream's penalized mean uses 1.5 × the worst valid CD of the run, which is not a per-task quantity, so it is computed by `aggregate_metrics.py` at the job level rather than in the reward.
-- **Not adapted:** image-to-3D (the evaluation set ships no reference images; upstream renders them from the factories), single-shot and multi-turn LLM tracks, and GPU-based metrics (SigLIP-2, DINOv3, Uni3D) and the LLM judge.
+- **Which Chamfer is "CD" in Table 2.** Upstream reports both the plain CD (`cd`) and the minimum over 4 yaw rotations (`cd_yawmin`). Replaying the published GPT-5.4 mini runs (see Parity) gives a conditional `cd_yawmin` of 0.072, equal to Table 2's CD column, while plain `cd` is 0.093, so `cd_yawmin` is the Table 2 metric. Both are recorded.
+- **SigLIP-2 and Uni3D run on CPU.** Upstream runs both on GPU. The grader calls the upstream functions with `device="cpu"`, float32 (also upstream's Uni3D precision), the pinned weights, and 4 torch threads (`NEURAL_THREADS`, so results do not depend on the host's core count). The SigLIP-2 text is the instance's upstream `prompt_description.txt` (copied to `tests/reference/<Instance>.txt`), which is what upstream's `prompt.txt` holds for text-to-3D. Uni3D's farthest-point sampling picks a random start point and upstream does not seed it; the grader seeds torch with 0 so repeated scoring gives the same value. As with Chamfer, each task's point sampling uses a fresh RNG seeded 0 (upstream uses one RNG across a whole results directory). `siglip2_text_image` is the mean over the 4 renders (`siglip2_text_image_max` and per-view values are also recorded). `aggregate_metrics.py` reports conditional means (SigLIP-2 over tasks with all 4 renders; Uni3D over tasks with both GLBs) and penalized means (failures count as 0).
+- **Per-task files in `tests/` live only at instance-named paths.** `tests/` is the Docker build context of the grading image. Docker's incremental context transfer can keep a file from an earlier build when its path, size and modification time all match. Files written in the same kernel clock tick share an mtime, so in one oracle run two tasks whose `test.sh` differed only in a same-length instance name (`Pillar_seed0` / `Pillow_seed0`, `TriangleShelf_seed0` / `TruncatedTree_seed0`) were graded with the neighbouring task's `test.sh`. Since then `test.sh` and every other shared path are identical across tasks. The instance comes from `[verifier] env` and the caption sits at `reference/<Instance>.txt`. `evaluate.py` also refuses to score (no reward) if the reference files for the instance are missing.
+- **Not adapted:** the image-to-3D track (upstream also publishes image-to-3D coding-agent runs, with the four reference views under `3DCodeBench_ModelLogs/inputs/`, but the paper's coding-agent results, Table 2, are text-to-3D only); the single-shot and multi-turn LLM tracks; DINOv3 image-image similarity (a reference-view metric that is not in Table 2); and the LLM judge.
 - **The upstream `.agent_done` sentinel** is kept in the prompt and recorded in `metrics.json` but, as upstream, does not affect the score.
 - **Generated code runs inside the grader.** As upstream, scoring executes the agent's script (as root, inside the separate verifier container) in the same Blender process that writes the render log. A deliberately adversarial script could tamper with that container's scoring files; trajectories and the archived script (`artifacts/workspace/<Instance>.py`) allow such cases to be audited.
-- **Resource use.** The image is about 1.8 GB. Verification re-runs the agent's script up to twice plus the reference once; the median oracle verification takes about 40 s and the slowest (`BasketBase_seed0`, `PalmTree_seed0`, `Mushroom_seed0`) several minutes when many trials share a host.
+- **Resource use.** The agent image is about 1.8 GB; the grading image about 9.7 GB (6.6 GB of it model weights), built once and shared by all tasks through Docker layer caching. Verification re-runs the agent's script up to twice plus the reference once, then loads the two models one after the other (peak memory about 6.3 GB, so the grader requests 16 GB). With 4 threads the model step takes about 10 s (SigLIP-2) plus about 30 s (Uni3D) per task. The whole verifier takes about 1 minute per task (median, 8 concurrent trials).
 
 ## Installation / Prerequisites
 
@@ -170,12 +208,14 @@ Reproduction (to be finalised with the parity fork):
   cd src/threedcodebench
   uv sync
   ```
-- Network access to huggingface.co (dataset), github.com (upstream helpers) and download.blender.org (image build).
+- Network access to huggingface.co (dataset and, at image build, the SigLIP-2 / Uni3D weights), github.com (upstream helpers, Uni3D encoder) and download.blender.org (image build). Grading itself runs offline.
+- About 12 GB of free disk for the two images.
 - API keys for the agent/model you evaluate (e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`).
 
 ## Troubleshooting
 
-- **Image build is slow or times out:** the Blender 5.0.0 archive is ~390 MB; build once with Docker layer caching (all tasks share the same Dockerfile) or raise `--environment-build-timeout-multiplier`.
+- **Image build is slow or times out:** the Blender 5.0.0 archive is ~390 MB and the grading image also downloads ~6.6 GB of weights; build once with Docker layer caching (all tasks share the same layers, only the final `COPY` of `tests/` differs) or raise `--environment-build-timeout-multiplier`.
+- **Model step fails (`neural_metrics.py`):** see `verifier/eval/neural_metrics.log`; the trial records a grader error and no reward. Out-of-memory is the usual cause when the runtime enforces a smaller memory limit than the 16 GB requested.
 - **`ERR_TIMEOUT` on heavy scripts under high concurrency:** Cycles uses every visible core; reduce `-n` when running many trials on one host.
 - **Inspecting a failure:** `verifier/metrics.json` has the stage statuses and tracebacks; `verifier/eval/generated/` holds the copied script, renders, GLB and Blender logs.
 

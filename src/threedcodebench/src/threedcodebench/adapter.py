@@ -37,6 +37,8 @@ UPSTREAM_TEST_FILES = (
     "core/render.py",
     "core/export_glb.py",
     "metrics/shape_chamfer.py",
+    "metrics/text_image_similarity.py",
+    "metrics/shape_uni3d.py",
 )
 
 # Minimal fixes for reference scripts that do not run as published.
@@ -50,7 +52,7 @@ REFERENCE_PATCHES: dict[str, list[tuple[str, str]]] = {
         (
             "endpoints = np.array([572, 248, 14, 253, 26])\n",
             "endpoints = np.array([572, 248, 14, 253, 26])\n"
-            "n_ep = len(endpoints)  # harbor adapter fix, see adapter README\n",
+            "n_ep = len(endpoints)  # adapter fix, see adapter README\n",
         )
     ],
 }
@@ -60,7 +62,6 @@ TEMPLATED_FILES = (
     "task.toml",
     "instruction.md",
     "solution/solve.sh",
-    "tests/test.sh",
 )
 
 
@@ -104,23 +105,36 @@ class ThreeDCodeBenchAdapter:
     def _download_benchmark(dest: Path) -> Path:
         from huggingface_hub import snapshot_download
 
-        snapshot_download(
-            repo_id=HF_REPO_ID,
-            repo_type="dataset",
-            revision=HF_REVISION,
-            allow_patterns=[f"{HF_SUBDIR}/*"],
-            local_dir=dest,
-        )
+        try:
+            snapshot_download(
+                repo_id=HF_REPO_ID,
+                repo_type="dataset",
+                revision=HF_REVISION,
+                allow_patterns=[f"{HF_SUBDIR}/*"],
+                local_dir=dest,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not download {HF_REPO_ID}@{HF_REVISION} ({e}). "
+                "Check network access to huggingface.co, or pass --benchmark-dir."
+            ) from e
         return dest / HF_SUBDIR
 
     @staticmethod
     def _clone_upstream(dest: Path) -> Path:
         dest.mkdir(parents=True, exist_ok=True)
         run = lambda *a: subprocess.run(["git", "-C", str(dest), *a], check=True, capture_output=True)  # noqa: E731
-        run("init", "-q")
-        run("remote", "add", "origin", UPSTREAM_REPO)
-        run("fetch", "-q", "--depth", "1", "origin", UPSTREAM_COMMIT)
-        run("checkout", "-q", "FETCH_HEAD")
+        try:
+            run("init", "-q")
+            run("remote", "add", "origin", UPSTREAM_REPO)
+            run("fetch", "-q", "--depth", "1", "origin", UPSTREAM_COMMIT)
+            run("checkout", "-q", "FETCH_HEAD")
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Could not fetch {UPSTREAM_REPO}@{UPSTREAM_COMMIT}: "
+                f"{e.stderr.decode(errors='replace').strip()}. "
+                "Check network access to github.com, or pass --upstream-dir."
+            ) from e
         return dest
 
     @staticmethod
@@ -191,9 +205,13 @@ class ThreeDCodeBenchAdapter:
 
         reference = self._patched_reference(inst)
         (out / "solution" / f"{inst.name}.py").write_text(reference, encoding="utf-8")
+        # tests/ is the verifier's Docker build context. Task-specific files go
+        # only under instance-named paths (see the note in tests/Dockerfile).
         ref_dir = out / "tests" / "reference"
         ref_dir.mkdir(parents=True, exist_ok=True)
         (ref_dir / f"{inst.name}.py").write_text(reference, encoding="utf-8")
+        # Text side of the SigLIP-2 metric (the same caption the agent sees).
+        (ref_dir / f"{inst.name}.txt").write_text(inst.description + "\n", encoding="utf-8")
 
         up_dir = out / "tests" / "upstream"
         up_dir.mkdir(parents=True, exist_ok=True)

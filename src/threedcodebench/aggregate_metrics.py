@@ -9,9 +9,14 @@ paper reports (Table 2, coding-agent rows):
   executability     fraction of tasks whose script ran, produced >= 1 mesh and
                     rendered 4 views (trials without metrics count as 0)
   cd / cd_yawmin    conditional mean Chamfer distance over tasks whose
-                    generated GLB loaded (upstream `conditional_mean`)
-  *_penalized       failures scored as 1.5 x the worst valid CD of the run
-                    (upstream `penalized_mean`)
+                    generated GLB loaded (upstream `conditional_mean`);
+                    penalized: failures scored as 1.5 x the worst valid CD
+  siglip2           SigLIP-2 text-image similarity (mean over the 4 views),
+                    conditional over tasks with all 4 renders; penalized:
+                    tasks without renders count as 0
+                    (upstream metrics/text_image_similarity.py)
+  uni3d             Uni3D 3D-3D cosine, conditional over tasks with a value;
+                    penalized: others count as 0 (upstream metrics/shape_uni3d.py)
 
 Usage:
   python aggregate_metrics.py <job_dir> [<job_dir> ...] [--expected-tasks 212]
@@ -51,6 +56,19 @@ def summarize(rows: list[dict], expected: int | None) -> dict:
             out[f"{key}_penalized"] = (sum(valid) + penalty * (n - len(valid))) / n
         else:
             out[f"{key}_penalized"] = None
+
+    sig = [r["siglip2_text_image"] for r in rows
+           if r.get("siglip2_n_views") == 4 and r.get("siglip2_text_image") is not None]
+    out["siglip2_n_valid"] = len(sig)
+    out["siglip2_conditional"] = sum(sig) / len(sig) if sig else None
+    out["siglip2_penalized"] = sum((r.get("siglip2_text_image") or 0.0) for r in rows) / n
+
+    uni = [r["uni3d_3d_3d"] for r in rows
+           if r.get("uni3d_status") == "OK" and r.get("uni3d_3d_3d") is not None]
+    out["uni3d_n_valid"] = len(uni)
+    out["uni3d_conditional"] = sum(uni) / len(uni) if uni else None
+    out["uni3d_penalized"] = sum(uni) / n
+
     out["missing_metrics"] = sum(1 for r in rows if r.get("missing_metrics"))
     return out
 
@@ -74,7 +92,8 @@ def main() -> None:
     result: dict = {"runs": per_run}
     if len(per_run) > 1:
         across = {}
-        for key in ("executability", "cd_conditional", "cd_yawmin_conditional"):
+        for key in ("executability", "cd_conditional", "cd_yawmin_conditional",
+                    "siglip2_conditional", "uni3d_conditional"):
             vals = [r[key] for r in per_run.values() if r[key] is not None]
             if vals:
                 m, sem = mean_sem(vals)
@@ -88,7 +107,7 @@ def main() -> None:
         print(f"{job}")
         print(f"  trials={s['n_trials']} tasks={s['n_tasks']} missing_metrics={s['missing_metrics']}")
         print(f"  executability={s['executability']:.4f}")
-        for key in ("cd", "cd_yawmin"):
+        for key in ("cd", "cd_yawmin", "siglip2", "uni3d"):
             c, pen = s[f"{key}_conditional"], s[f"{key}_penalized"]
             print(f"  {key:<9} conditional={c if c is None else f'{c:.4f}'} "
                   f"(n={s[f'{key}_n_valid']})  penalized={pen if pen is None else f'{pen:.4f}'}")

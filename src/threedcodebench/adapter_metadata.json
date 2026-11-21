@@ -15,9 +15,9 @@
         "split": "image_to_3d",
         "size": 212,
         "harness": "agent",
-        "supported_agents": ["gemini-cli@unspecified", "antigravity@unspecified"],
-        "adaptable": false,
-        "notes": "Not adapted in this version: the evaluation set ships no reference images (they must be rendered from the factories), and the paper's coding-agent table covers text-to-3D only."
+        "supported_agents": ["claude-code@unspecified", "codex@unspecified", "gemini-cli@unspecified", "antigravity@unspecified"],
+        "adaptable": true,
+        "notes": "Not included in this version. Upstream publishes image-to-3D coding-agent runs (agent_logs/image_to_3D_agent, 4 reference views per object under 3DCodeBench_ModelLogs/inputs/), but the paper's coding-agent results (Table 2) cover text-to-3D only."
       }
     ],
     "harbor_adapter": [
@@ -31,7 +31,7 @@
         "parity_matching_agents": [],
         "parity_unmatching_agents": ["None"],
         "parity_costs": null,
-        "notes": "Parity pending. Oracle: 212/212. Reward = upstream executability; Chamfer distance in /logs/verifier/metrics.json."
+        "notes": "Parity pending. Oracle: 212/212. Reward = upstream executability; Chamfer distance, SigLIP-2 text-image and Uni3D 3D-3D similarity (the other Table 2 metrics, computed on CPU) in /logs/verifier/metrics.json. Re-scoring upstream's published GPT-5.4 mini Codex CLI scripts reproduces Table 2 (exec 1.000, SigLIP-2 0.155 vs 0.154, Uni3D 0.444 vs 0.450, CD 0.072 vs 0.072)."
       }
     ]
   }
