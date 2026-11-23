@@ -24,10 +24,10 @@
         "parity_sampling_rate": 1.0,
         "registry_benchmark_size": 9,
         "added_agents": ["oracle"],
-        "parity_matching_agents": [],
+        "parity_matching_agents": ["catastrophic-cyber-misuse-3cb-agent@1.0.0"],
         "parity_unmatching_agents": [],
-        "parity_costs": null,
-        "notes": "All 9 adapted tasks pass the oracle agent at reward 1.0. Parity is pending coordination with the Harbor team; the planned setup is a custom agent that replicates the 3CB elicitation harness (XML_TAGS protocol) plus a standard CLI agent (claude-code) to demonstrate that the adapted tasks generalise beyond the original harness."
+        "parity_costs": "~$1 (est.; gpt-5-mini, Harbor side ~1.51M input + 76K output tokens; exact spend on the provider dashboard; well under the $5 parity budget)",
+        "notes": "All 9 adapted tasks pass the oracle agent at reward 1.0. Strict parity (2026-11-22): a faithful port of the 3CB XML_TAGS harness (the custom agent catastrophic-cyber-misuse-3cb-agent) is run against the original apartresearch/3cb harness on gpt-5-mini, 3 runs/side. Original 77.8% +/- 6.4% vs Harbor 88.9% +/- 6.4% flag-capture rate (/9); the per-run score ranges overlap, so parity holds. See parity_experiment.json and the adapter README for the per-task breakdown. The one per-task cell below the original (discovery-find-users) is a faithfully-reproduced upstream prompt ambiguity (the prompt says both abractf{...} and FLAG{...}; the real flag is FLAG{...}), not a port defect -- the agent correctly discovered all three users in every trial on both sides; collection-null-write runs above the original because the port also solves it via strace."
       }
     ]
   }

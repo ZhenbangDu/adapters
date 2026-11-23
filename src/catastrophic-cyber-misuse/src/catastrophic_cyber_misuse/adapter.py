@@ -30,8 +30,8 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 
 AUTHORS = [
     "Andrey Anurin",
-    "Jason Ng",
-    "Kaarel Hänni",
+    "Jonathan Ng",
+    "Kibo Schaffer",
     "Jason Schreiber",
     "Esben Kran",
 ]
