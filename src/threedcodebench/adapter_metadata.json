@@ -24,14 +24,14 @@
       {
         "split": "text_to_3d",
         "adapted_benchmark_size": 212,
-        "parity_benchmark_size": null,
-        "parity_sampling_rate": null,
+        "parity_benchmark_size": 50,
+        "parity_sampling_rate": 0.2358,
         "registry_benchmark_size": 212,
         "added_agents": ["None"],
-        "parity_matching_agents": [],
+        "parity_matching_agents": ["codex@0.171.0+gpt-5.4-mini"],
         "parity_unmatching_agents": ["None"],
-        "parity_costs": null,
-        "notes": "Parity pending. Oracle: 212/212. Reward = upstream executability; Chamfer distance, SigLIP-2 text-image and Uni3D 3D-3D similarity (the other Table 2 metrics, computed on CPU) in /logs/verifier/metrics.json. Re-scoring upstream's published GPT-5.4 mini Codex CLI scripts reproduces Table 2 (exec 1.000, SigLIP-2 0.155 vs 0.154, Uni3D 0.444 vs 0.450, CD 0.072 vs 0.072)."
+        "parity_costs": "$7.4",
+        "notes": "Parity on a random 50-task subset (--split parity), 3 runs per side, Codex CLI 0.171.0 with gpt-5.4-mini. Executability, Uni3D and Chamfer run-score ranges overlap. SigLIP-2 ranges do not (original 0.1412 ± 0.0003, Harbor 0.1456 ± 0.0011); the README documents equivalent scoring on the same scripts and a per-task gap within sampling noise (p = 0.27). Oracle: 212/212. Reward = upstream executability; Chamfer distance, SigLIP-2 text-image and Uni3D 3D-3D similarity (the other Table 2 metrics, computed on CPU) in /logs/verifier/metrics.json. Re-scoring upstream's published GPT-5.4 mini Codex CLI scripts reproduces Table 2 (exec 1.000, SigLIP-2 0.155 vs 0.154, Uni3D 0.444 vs 0.450, CD 0.072 vs 0.072)."
       }
     ]
   }

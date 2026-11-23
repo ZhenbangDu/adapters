@@ -130,6 +130,7 @@ uv run threedcodebench --output-dir ../../datasets/threedcodebench
 
 Available flags:
 - `--output-dir` — where tasks are written (default: `datasets/threedcodebench` at the repo root)
+- `--split` — `full` (default, all 212 tasks) or `parity` (the 50-task parity subset, see Parity)
 - `--limit` — generate only the first N tasks (sorted by upstream instance name)
 - `--overwrite` — overwrite existing task directories
 - `--task-ids` — only these tasks; accepts Harbor ids (`armchair-seed0`) or upstream ids (`ArmChair_seed0`)
@@ -138,7 +139,7 @@ Available flags:
 
 ## Comparison with Original Benchmark (Parity)
 
-**Status: oracle verified, scorers checked against the paper, parity pending.**
+**Status: oracle verified, scorers checked against the paper, parity run on a 50-task subset (3 runs per side).**
 
 **Oracle.** Harbor `0.27.0`, local Docker, separate verifier container, 8 concurrent trials: 212/212 tasks pass (executability 1.000) with no trial errors. Against the reference, the oracle gets:
 
@@ -157,28 +158,86 @@ Available flags:
 
 The remaining differences come from CPU instead of GPU inference, per-task sampling seeds and re-baked reference GLBs (see Notes & Caveats).
 
-**Parity (pending).** The plan is still to be confirmed with the Harbor team. It uses the coding agent from the upstream harness (Codex CLI) with the same pinned agent version, model, prompt and 600 s budget on both sides. All four Table 2 metrics are reported as mean ± sample SEM over at least 3 runs. Executability alone is close to saturated for coding agents in the paper (0.986–1.000), so the three similarity metrics carry most of the signal.
+**Parity.** Both sides ran Codex CLI `0.171.0` with `gpt-5.4-mini` (model-default reasoning) through the same OpenAI-compatible endpoint, with the upstream prompt and a 600 s agent budget, 4 tasks at a time, with both sides running at the same time.
+- **Original side:** upstream's `tasks/coding_agent/run_codex_agent.sh`, unchanged except that the Blender path is read from `$BLENDER`. It runs in a container on the same Ubuntu 24.04 / Blender 5.0.0 base as the Harbor task image. Scoring uses upstream's `core/render.py`, `core/export_glb.py` and `metrics/*.py`, with the same CPU models and 600 s caps as the Harbor verifier.
+- **Harbor side:** Harbor's built-in `codex` agent.
+
+All four Table 2 metrics are reported as mean ± sample SEM over 3 runs. Executability alone is close to saturated for coding agents in the paper (0.986–1.000), so the three similarity metrics carry most of the signal.
+
+**Subset.** Parity ran on 50 of the 212 tasks (23.6%), drawn at random from the task ids sorted by name:
+- the first 20 with `random.Random(0).sample(ids, 20)`, the initial sample;
+- 30 more with `random.Random(1).sample(rest, 30)` from the remaining 192, which extended it to 50.
+
+`uv run threedcodebench --split parity` generates exactly these tasks; the list is in `src/threedcodebench/parity.py`.
 
 | Agent | Model | Metric | Number of Runs | Dataset Size | Original Benchmark Performance | Harbor Adapter Performance |
 |-------|-------|--------|------------------|--------------|------------------------------|----------------------------|
-| TBD | TBD | executability | TBD | 212 (100%) | TBD | TBD |
-| TBD | TBD | SigLIP-2 text-image (conditional) | TBD | 212 (100%) | TBD | TBD |
-| TBD | TBD | Uni3D 3D–3D (conditional) | TBD | 212 (100%) | TBD | TBD |
-| TBD | TBD | Chamfer distance, `cd_yawmin` (conditional) | TBD | 212 (100%) | TBD | TBD |
+| codex@0.171.0 | gpt-5.4-mini | executability | 3 | 50 (23.6%) | 1.0000 ± 0.0000 | 1.0000 ± 0.0000 |
+| codex@0.171.0 | gpt-5.4-mini | SigLIP-2 text-image (conditional) | 3 | 50 (23.6%) | 0.1412 ± 0.0003 | 0.1456 ± 0.0011 |
+| codex@0.171.0 | gpt-5.4-mini | Uni3D 3D–3D (conditional) | 3 | 50 (23.6%) | 0.4000 ± 0.0033 | 0.3901 ± 0.0022 |
+| codex@0.171.0 | gpt-5.4-mini | Chamfer distance, `cd_yawmin` (conditional, lower is better) | 3 | 50 (23.6%) | 0.0762 ± 0.0038 | 0.0716 ± 0.0016 |
 
-Reproduction (to be finalised with the parity fork):
-- **Original side:** the upstream coding-agent scripts (`tasks/coding_agent/run_*_agent.sh`) at `42c7780`, scored with:
-  - `core/render.py` and `core/export_glb.py`;
-  - `metrics/shape_chamfer.py`, `metrics/text_image_similarity.py` and `metrics/shape_uni3d.py`.
+Per-run scores and the matching criterion (the run-score ranges of the two sides overlap):
 
-  The fork will fix the hardcoded Blender path and data directory and use the same 600 s scoring caps.
+| Metric | Original runs | Harbor runs | Ranges overlap |
+|--------|---------------|-------------|----------------|
+| Executability | 1.000, 1.000, 1.000 | 1.000, 1.000, 1.000 | yes |
+| SigLIP-2 | 0.1406, 0.1411, 0.1418 | 0.1455, 0.1476, 0.1438 | **no** |
+| Uni3D | 0.4055, 0.4004, 0.3940 | 0.3880, 0.3877, 0.3945 | yes |
+| CD (`cd_yawmin`) | 0.0772, 0.0691, 0.0822 | 0.0712, 0.0692, 0.0745 | yes |
+
+All 300 agent runs finished within the 600 s budget and wrote `.agent_done`, and every script was executable.
+
+One Harbor trial failed before its agent ran: `leafheart-seed0`, run 2, with `AgentSetupTimeoutError`. Codex installation took over 360 s while 16 trials were starting at once. That trial was re-run with `harbor jobs resume -f AgentSetupTimeoutError`.
+
+Each run was executed as two jobs (20 tasks, then the other 30) because the subset was extended from 20 to 50 tasks.
+
+Model calls cost $7.4: $3.75 on the Harbor side and $3.62 on the original side.
+
+**SigLIP-2 investigation.** SigLIP-2 is the only metric whose ranges do not overlap. The gap was traced as follows; it points to sampling noise in the agents' outputs, not to a difference in the adapter.
+
+- **Scoring is equivalent.** Both sides score the same text: the 150 scored prompts are byte-identical after stripping whitespace. They use the same upstream encoding functions and pinned weights. Every script from both sides was also re-scored by the other side's scorer:
+
+  | Scripts | Harbor verifier | Upstream scorer |
+  |---|---|---|
+  | Harbor agents' 149 | 0.1456 | 0.1456 |
+  | Original agents' 150 | 0.1411 | 0.1412 |
+
+  The mean difference between scorers is below 1e-4, and 263 of 299 scores are identical. The rest differ because some agent scripts use unseeded randomness and build slightly different meshes on each execution. One further Harbor script hit the 600 s render cap in the upstream re-score, under heavy load. So the gap lies in the scripts, not in scoring.
+- **Same agent configuration.** Capturing the API requests Codex sends under each side's invocation shows identical model parameters, tool definitions and system prompt. Only the working-directory path differs: in the environment context, the skills root, and the prompt's "Working directory" line.
+- **The working directory changes exploration.** Upstream runs the agent inside the repository's results tree, next to the other tasks' outputs, while Harbor uses an empty `/workspace`. Original-side agents looked at parent directories in 57% of runs, against 9% on Harbor. Four of the 150 original runs saw another task's files, which accounts for about 0.0008 of the gap.
+- **The outputs differ slightly in colour.** Harbor's renders have more coloured pixels (share 0.150 vs 0.123). Within a task, colour explains about a quarter of the SigLIP-2 gap. Neither this nor any other output feature differs significantly per task (paired tests, p ≥ 0.07).
+- **The gap is within sampling noise.** Per task, Harbor minus original is +0.0045 with SE 0.0041 (paired, p = 0.27). Run-to-run variation within tasks implies an SD of about 0.0046 for a run's 50-task mean. The original side's three run means, however, fell within 0.0012 (SD 0.0006), which happens in about 2% of random run assignments, and that is why the ranges do not overlap. Uni3D and Chamfer, which depend only on geometry, do overlap.
+
+Links:
+- Original benchmark: [gaoypeng/3dcodebench](https://github.com/gaoypeng/3dcodebench) at `42c7780`.
+- Parity fork (original side): [ZhenbangDu/3dcodebench, branch `harbor-parity`](https://github.com/ZhenbangDu/3dcodebench/tree/harbor-parity).
+- Adapter PR: [harbor-framework/adapters#99](https://github.com/harbor-framework/adapters/pull/99).
+- Dataset PR: [harbor-framework/harbor-datasets#297](https://github.com/harbor-framework/harbor-datasets/pull/297).
+- Parity and oracle artifacts: [ZhenbangDu/threedcodebench-parity, pinned at `71bb391`](https://huggingface.co/datasets/ZhenbangDu/threedcodebench-parity/tree/71bb3917ccfb993c188dd75050c1d7274d0aa09f/adapters/threedcodebench). They include every attempt and the aggregation scripts. This is a personal dataset because the shared `harborframework/parity-experiments` repository is over Hugging Face's file limit ([adapters#129](https://github.com/harbor-framework/adapters/issues/129)). `SHA256SUMS` there lists all 11,798 files; its own SHA-256 is `12d7cef3f411205913c272b2777e3e14e579a656813bb4272f7102717351f51e`. To recompute the parity table from the uploaded files, run `python scripts/aggregate_parity_upload.py .` in that folder.
+
+Reproduction:
+- **Original side:** the parity fork [ZhenbangDu/3dcodebench, branch `harbor-parity`](https://github.com/ZhenbangDu/3dcodebench/tree/harbor-parity) (commit `c77ca22`, on upstream `42c7780`), directory `harbor_parity/`, with the 50 upstream instance names in `harbor_parity/parity_instances.txt`:
+  ```bash
+  docker build -f harbor_parity/Dockerfile.agent -t 3dcb-parity-agent:codex-0.171.0 harbor_parity
+  docker build -f harbor_parity/Dockerfile.score -t 3dcb-parity-score:1 harbor_parity
+  harbor_parity/prepare_data.sh /path/to/3DCodeBench harbor_parity/parity_instances.txt
+  export OPENAI_API_KEY=... OPENAI_BASE_URL=...
+  harbor_parity/run_agents.sh gpt-5.4-mini harbor_parity/parity_instances.txt runs/r1 4
+  harbor_parity/score.sh gpt-5.4-mini harbor_parity/parity_instances.txt runs/r1
+  # repeat for runs/r2 and runs/r3, then:
+  python3 harbor_parity/summarize.py gpt-5.4-mini runs/r1 runs/r2 runs/r3
+  ```
 - **Harbor side:**
   ```bash
-  harbor run -c src/threedcodebench/run_threedcodebench.yaml -a <agent> -m "<model>"
-  python src/threedcodebench/aggregate_metrics.py jobs/<job_name> --expected-tasks 212
+  (cd src/threedcodebench && uv run threedcodebench --split parity --output-dir ../../datasets/threedcodebench-parity)
+  export OPENAI_API_KEY=... OPENAI_BASE_URL=...
+  harbor run -p datasets/threedcodebench-parity -a codex -m openai/gpt-5.4-mini --ak version=0.171.0 -n 4 --job-name parity-r1
+  # repeat as parity-r2 and parity-r3, then:
+  python src/threedcodebench/aggregate_metrics.py jobs/parity-r1 jobs/parity-r2 jobs/parity-r3 --expected-tasks 50
   ```
 - **Metric definitions:**
-  - **Executability:** 0/1 per task, averaged over the 212 tasks.
+  - **Executability:** 0/1 per task, averaged over all tasks.
   - **`cd_yawmin`:** the symmetric squared Chamfer distance between unit-sphere-normalised point clouds, minimised over 4 yaw rotations (lower is better). It is averaged over tasks whose GLB was produced.
   - **SigLIP-2 and Uni3D:** cosine similarities (higher is better), averaged as described in Notes & Caveats.
 
@@ -186,14 +245,14 @@ Reproduction (to be finalised with the parity fork):
 
 - **Patched reference script (`FanCoral_seed0`).** The published factory computes `n_ep` from a geometry-dependent candidate count but hardcodes five endpoint indices; when the count is not 5 (as in a clean Blender 5.0.0 run), `csr_matrix` receives index and data arrays of different lengths and raises `ValueError`. The adapter adds `n_ep = len(endpoints)` after the hardcoded indices, in both the oracle and the hidden reference. The other 211 reference scripts are used unmodified. This will be reported upstream.
 - **Prompt variant.** Upstream ships near-identical prompts per CLI; the Claude Code variant names its tools ("Use the Write tool …"). The adapter uses the agent-neutral Codex-CLI wording for all agents; parity runs use the same wording on both sides.
-- **Paths.** `$WORK_DIR` becomes `/workspace` and the hardcoded Blender path becomes `blender` on `PATH`.
+- **Paths.** `$WORK_DIR` becomes `/workspace` and the hardcoded Blender path becomes `blender` on `PATH`. Upstream's `$WORK_DIR` is `tasks/results/text_to_3D_agent/<model>/<Instance>/` inside the repository, next to other tasks' outputs. Harbor's `/workspace` is empty, so agents explore less and cannot see other tasks (see the SigLIP-2 investigation under Parity).
 - **Scoring timeouts raised from 240 s / 180 s to 600 s.** Upstream caps the render and GLB-export Blender calls at 240 s and 180 s, tuned for GPU rendering. On the CPU-only image several valid reference scripts exceed them (`BasketBase`, `PalmTree` render; `Bed` export) when trials run concurrently, so both caps are 600 s (the dataset card targets scripts that finish in under 5 minutes on one CPU core). The original side of the parity experiments must use the same caps. If the render call times out, the export call is skipped, since it would re-run the same script under the same cap.
 - **`ElkhornCoral_seed0` reference is an empty mesh.** Its published factory script runs and leaves one mesh object (so it counts as executable), but in Blender 5.0.0 the surface-construction step leaves 0 faces (6 vertices, 4 edges before solidify/remesh), so the exported GLB has no geometry. Chamfer distance is therefore undefined for this task (`chamfer_status = BAD_REF_MESH`) on both sides and it drops out of the conditional mean; executability is unaffected. This will be reported upstream.
 - **Some reference scripts are not bit-for-bit deterministic.** A few coral/plant factories (`TableCoral`, `DiffGrowthBaseCoral`, `LeatherCoral`, `Seaweed`) produce slightly different meshes on repeated runs even with a fixed `PYTHONHASHSEED`. Upstream bakes the reference GLB once; the Harbor verifier re-bakes it in every trial (shipping baked GLBs would add ~2.7 GB to the dataset). Measured oracle self-distance over two full oracle runs: median ≈ 3e-4 per task; `TableCoral` reached 0.027 and 0.070 (comparable to the ≈ 0.07 agent average in the paper), while all other tasks stayed ≤ 0.014. The effect on the 211-task conditional mean is below 0.001, but per-task Chamfer for these instances is noisy.
 - **Chamfer sampling seed.** Upstream draws all per-instance sampling seeds from one RNG shared across a whole results directory; the Harbor verifier scores each task alone with a fresh RNG seeded 0. This only changes which surface points are sampled (oracle self-distance ≈ 1e-3 versus typical agent CD ≈ 0.07).
 - **Penalized Chamfer.** Upstream's penalized mean uses 1.5 × the worst valid CD of the run, which is not a per-task quantity, so it is computed by `aggregate_metrics.py` at the job level rather than in the reward.
 - **Which Chamfer is "CD" in Table 2.** Upstream reports both the plain CD (`cd`) and the minimum over 4 yaw rotations (`cd_yawmin`). Replaying the published GPT-5.4 mini runs (see Parity) gives a conditional `cd_yawmin` of 0.072, equal to Table 2's CD column, while plain `cd` is 0.093, so `cd_yawmin` is the Table 2 metric. Both are recorded.
-- **SigLIP-2 and Uni3D run on CPU.** Upstream runs both on GPU. The grader calls the upstream functions with `device="cpu"`, float32 (also upstream's Uni3D precision), the pinned weights, and 4 torch threads (`NEURAL_THREADS`, so results do not depend on the host's core count). The SigLIP-2 text is the instance's upstream `prompt_description.txt` (copied to `tests/reference/<Instance>.txt`), which is what upstream's `prompt.txt` holds for text-to-3D. Uni3D's farthest-point sampling picks a random start point and upstream does not seed it; the grader seeds torch with 0 so repeated scoring gives the same value. As with Chamfer, each task's point sampling uses a fresh RNG seeded 0 (upstream uses one RNG across a whole results directory). `siglip2_text_image` is the mean over the 4 renders (`siglip2_text_image_max` and per-view values are also recorded). `aggregate_metrics.py` reports conditional means (SigLIP-2 over tasks with all 4 renders; Uni3D over tasks with both GLBs) and penalized means (failures count as 0).
+- **SigLIP-2 and Uni3D run on CPU.** Upstream runs both on GPU. The grader calls the upstream functions with `device="cpu"`, float32 (also upstream's Uni3D precision), the pinned weights, and 4 torch threads (`NEURAL_THREADS`, so results do not depend on the host's core count). The SigLIP-2 text is the instance's upstream `prompt_description.txt` (copied to `tests/reference/<Instance>.txt`), which is what upstream's `prompt.txt` holds for text-to-3D. Uni3D's farthest-point sampling picks a random start point and upstream does not seed it; the grader seeds torch with 0 so repeated scoring gives the same value. As with Chamfer, each task's point sampling uses a fresh RNG seeded 0 (upstream uses one RNG across a whole results directory). `siglip2_text_image` is the mean over the 4 renders (`siglip2_text_image_max` and per-view values are also recorded). `aggregate_metrics.py` reports conditional means (SigLIP-2 over tasks with all 4 renders; Uni3D over tasks with both GLBs) and penalized means (failures count as 0). The parity scripts were re-scored by both scorers (about 300 scripts). SigLIP-2 matches (mean difference below 1e-4). The Harbor verifier's Uni3D averages about 0.002 lower than upstream's; individual scripts differ by up to 0.13 because the two point-sample differently.
 - **Per-task files in `tests/` live only at instance-named paths.** `tests/` is the Docker build context of the grading image. Docker's incremental context transfer can keep a file from an earlier build when its path, size and modification time all match. Files written in the same kernel clock tick share an mtime, so in one oracle run two tasks whose `test.sh` differed only in a same-length instance name (`Pillar_seed0` / `Pillow_seed0`, `TriangleShelf_seed0` / `TruncatedTree_seed0`) were graded with the neighbouring task's `test.sh`. Since then `test.sh` and every other shared path are identical across tasks. The instance comes from `[verifier] env` and the caption sits at `reference/<Instance>.txt`. `evaluate.py` also refuses to score (no reward) if the reference files for the instance are missing.
 - **Not adapted:** the image-to-3D track (upstream also publishes image-to-3D coding-agent runs, with the four reference views under `3DCodeBench_ModelLogs/inputs/`, but the paper's coding-agent results, Table 2, are text-to-3D only); the single-shot and multi-turn LLM tracks; DINOv3 image-image similarity (a reference-view metric that is not in Table 2); and the LLM judge.
 - **The upstream `.agent_done` sentinel** is kept in the prompt and recorded in `metrics.json` but, as upstream, does not affect the score.

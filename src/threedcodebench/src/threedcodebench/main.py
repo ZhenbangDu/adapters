@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from .adapter import ThreeDCodeBenchAdapter
+from .parity import PARITY_TASK_IDS
 
 # Default output dir: <repo>/datasets/threedcodebench
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[4] / "datasets" / "threedcodebench"
@@ -18,6 +19,13 @@ def main() -> None:
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
         help="Directory to write generated tasks",
+    )
+    parser.add_argument(
+        "--split",
+        choices=["full", "parity"],
+        default="full",
+        help="full: all 212 tasks. parity: the 50-task subset used for the parity "
+        "experiment (see parity.py)",
     )
     parser.add_argument(
         "--limit",
@@ -51,12 +59,17 @@ def main() -> None:
         "Default: shallow-fetch the pinned commit",
     )
     args = parser.parse_args()
+    task_ids = args.task_ids
+    if args.split == "parity":
+        if task_ids:
+            parser.error("--task-ids cannot be combined with --split parity")
+        task_ids = list(PARITY_TASK_IDS)
 
     adapter = ThreeDCodeBenchAdapter(
         args.output_dir,
         overwrite=args.overwrite,
         limit=args.limit,
-        task_ids=args.task_ids,
+        task_ids=task_ids,
         benchmark_dir=args.benchmark_dir,
         upstream_dir=args.upstream_dir,
     )
